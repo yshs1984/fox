@@ -122,6 +122,7 @@
     bannerText: '',
     reachedAdult: false,
     hearts: [],           // なでたときのハート演出
+    snacks: [],           // エサやりで出てくるあぶらあげの演出
     minigame: null,       // 「あそぶ」中のどんぐりキャッチの状態（非nullの間だけ進行中）
     cooldown: { feed: 0, play: 0, clean: 0, warm: 0, pet: 0 }
   };
@@ -136,7 +137,7 @@
 
   // ---------- 入力（画面下部の操作ボタン） ----------
   const buttons = {
-    feed: { x: 0, y: 0, w: 0, h: 0, label: 'エサ', key: 'feed' },
+    feed: { x: 0, y: 0, w: 0, h: 0, label: 'あぶらあげ', key: 'feed' },
     play: { x: 0, y: 0, w: 0, h: 0, label: 'あそぶ', key: 'play' },
     clean: { x: 0, y: 0, w: 0, h: 0, label: 'そうじ', key: 'clean' },
     sleep: { x: 0, y: 0, w: 0, h: 0, label: 'ねる', key: 'sleep' },
@@ -202,6 +203,11 @@
     if (state.sleeping || state.cooldown.feed > 0) return;
     stats.satiety = clamp(stats.satiety + CONFIG.feedAmount, 0, 100);
     state.cooldown.feed = CONFIG.feedCooldown;
+    state.snacks.push({
+      x: W / 2 + (Math.random() - 0.5) * 40,
+      y: groundY() - 200,
+      life: 1
+    });
     triggerBounce();
   }
 
@@ -460,6 +466,13 @@
       hrt.life -= dt / 1.2;
     }
     state.hearts = state.hearts.filter(hrt => hrt.life > 0);
+
+    // エサやりのあぶらあげを、狐の口元まで落としてから消す
+    for (const snack of state.snacks) {
+      snack.y += 90 * dt;
+      snack.life -= dt / 1.1;
+    }
+    state.snacks = state.snacks.filter(snack => snack.life > 0);
 
     if (state.stage !== EGG_STAGE) {
       updateStats(dt);
@@ -808,6 +821,28 @@
     }
   }
 
+  // エサやりで落ちてくるあぶらあげ
+  function drawSnacks() {
+    ctx.fillStyle = '#f2c169';
+    ctx.strokeStyle = '#c98f3a';
+    ctx.lineWidth = 1.5;
+    for (const snack of state.snacks) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, snack.life);
+      ctx.translate(snack.x, snack.y);
+      // 三角形の油揚げ
+      ctx.beginPath();
+      ctx.moveTo(0, -14);
+      ctx.lineTo(16, 12);
+      ctx.lineTo(-16, 12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   // なでたときのハート
   function drawHearts() {
     ctx.fillStyle = '#ff6f9c';
@@ -988,6 +1023,7 @@
       drawFox(W / 2, groundY());
     }
     drawHearts();
+    drawSnacks();
     drawAcorns();
     drawStatusBars();
     drawButtons();
