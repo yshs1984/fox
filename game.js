@@ -23,6 +23,12 @@
     canvas.height = Math.floor(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     layoutButtons();
+    // 画面幅が変わった場合、おさんぽ中の狐が画面外に出ないようにする
+    if (state.wander.initialized) {
+      const margin = CONFIG.wanderMargin;
+      state.wander.x = clamp(state.wander.x, margin, W - margin);
+      state.wander.targetX = clamp(state.wander.targetX, margin, W - margin);
+    }
   }
   window.addEventListener('resize', resize);
 
@@ -96,7 +102,13 @@
     tailWagSpeed: 3.2,       // しっぽを振る速さ（機嫌が良いほど速く振れる）
 
     // --- レイアウト ---
-    groundRatio: 0.72        // 地面の開始位置（画面の高さに対する割合）。キャラクターの足元をここに合わせる
+    groundRatio: 0.72,       // 地面の開始位置（画面の高さに対する割合）。キャラクターの足元をここに合わせる
+
+    // --- 待機中のおさんぽ（選択肢を待っている間、狐が自分で歩き回る） ---
+    wanderEase: 6,       // 目的地へ寄っていく速さ
+    wanderPauseMin: 2,   // 立ち止まってから次に歩き出すまでの時間（最小・秒）
+    wanderPauseMax: 5,   // 同（最大・秒）
+    wanderMargin: 60     // 歩き回れる範囲の左右の余白（px）
   };
 
   // ステージ0はまだ狐になっていない「たまご」。あたため続けると孵化する
@@ -126,6 +138,13 @@
     hearts: [],           // なでたときのハート演出
     snacks: [],           // エサやりで出てくるあぶらあげの演出
     minigame: null,       // 「あそぶ」中のどんぐりキャッチの状態（非nullの間だけ進行中）
+    // 選択肢を待っている間、狐が自分で歩き回るための状態
+    wander: {
+      initialized: false,
+      x: 0, targetX: 0,
+      walking: false, facing: 1, walkPhase: 0,
+      pauseTimer: 1.5
+    },
     cooldown: { feed: 0, play: 0, clean: 0, warm: 0, pet: 0 }
   };
 
@@ -206,7 +225,7 @@
     stats.satiety = clamp(stats.satiety + CONFIG.feedAmount, 0, 100);
     state.cooldown.feed = CONFIG.feedCooldown;
     state.snacks.push({
-      x: W / 2 + (Math.random() - 0.5) * 40,
+      x: currentFoxX() + (Math.random() - 0.5) * 40,
       y: groundY() - 200,
       life: 1
     });
@@ -292,7 +311,7 @@
     stats.mood = clamp(stats.mood + CONFIG.petMoodAmount, 0, 100);
     state.cooldown.pet = CONFIG.petCooldown;
     state.hearts.push({
-      x: W / 2 + (Math.random() - 0.5) * 60,
+      x: currentFoxX() + (Math.random() - 0.5) * 60,
       y: groundY() - 190,
       life: 1
     });
@@ -301,9 +320,16 @@
   // 地面のy座標（キャラクターの足元をここに合わせる）
   function groundY() { return H * CONFIG.groundRatio; }
 
+  // 狐の現在の横位置（ミニゲーム中はドラッグ位置、それ以外はおさんぽ中の位置）
+  function currentFoxX() {
+    if (state.stage === EGG_STAGE || state.sleeping) return W / 2;
+    if (state.minigame) return state.minigame.foxX;
+    return state.wander.x;
+  }
+
   // 狐が描かれているあたりのタップ判定（ざっくり円で判定する）
   function inFoxArea(px, py) {
-    const dx = px - W / 2;
+    const dx = px - currentFoxX();
     const dy = py - (groundY() - 90);
     return Math.hypot(dx, dy) < 110;
   }
@@ -467,6 +493,42 @@
     mg.acorns = mg.acorns.filter(a => !a.missed && !(a.caught && a.fade <= 0));
   }
 
+  // 選択肢を待っている間、狐が地面の上をのんびり歩き回る
+  function updateWander(dt) {
+    const w = state.wander;
+    if (!w.initialized) {
+      w.x = W / 2;
+      w.targetX = W / 2;
+      w.initialized = true;
+    }
+    // たまご・睡眠中・ミニゲーム中は歩き回らない
+    if (state.stage === EGG_STAGE || state.sleeping || state.minigame) {
+      w.walking = false;
+      return;
+    }
+
+    if (Math.abs(w.x - w.targetX) < 1.5) {
+      // 目的地に着いたら少し立ち止まってから、次の行き先を決める
+      w.walking = false;
+      w.pauseTimer -= dt;
+      if (w.pauseTimer <= 0) {
+        const margin = CONFIG.wanderMargin;
+        w.targetX = margin + Math.random() * (W - margin * 2);
+        w.pauseTimer = CONFIG.wanderPauseMin + Math.random() * (CONFIG.wanderPauseMax - CONFIG.wanderPauseMin);
+      }
+      return;
+    }
+
+    const prevX = w.x;
+    w.x += (w.targetX - w.x) * Math.min(1, dt * CONFIG.wanderEase);
+    const moveDelta = w.x - prevX;
+    w.walking = Math.abs(moveDelta) > 0.1;
+    if (w.walking) {
+      w.facing = moveDelta > 0 ? 1 : -1;
+      w.walkPhase += dt * (8 + Math.min(14, Math.abs(moveDelta) * 3));
+    }
+  }
+
   function updateGrowth(dt) {
     if (state.stage === EGG_STAGE) return; // 孵化は doWarm() が扱う
     if (state.stage >= STAGE_NAMES.length - 1) return;
@@ -516,6 +578,7 @@
       updateSickness(dt);
     }
     updateMinigame(dt);
+    updateWander(dt);
     updateGrowth(dt);
   }
 
@@ -730,10 +793,11 @@
     const bounceY = Math.sin(Math.min(1, state.bounce) * Math.PI) * 18;
 
     // 歩いている間は体をぴょこぴょこ弾ませ、左右に少し揺らして歩いている感じを出す
-    const mg = state.minigame;
-    const walking = !!(mg && mg.walking);
-    const walkBob = walking ? Math.abs(Math.sin(mg.walkPhase)) * 6 : 0;
-    const walkLean = walking ? Math.sin(mg.walkPhase) * 5 : 0; // 度
+    // （ミニゲーム中はドラッグでの移動、それ以外は待機中のおさんぽが対象）
+    const walkSource = state.minigame || state.wander;
+    const walking = !!(walkSource && walkSource.walking);
+    const walkBob = walking ? Math.abs(Math.sin(walkSource.walkPhase)) * 6 : 0;
+    const walkLean = walking ? Math.sin(walkSource.walkPhase) * 5 : 0; // 度
 
     const y = footY - bounceY - walkBob;
     const happy = !state.sick && stats.mood >= 55;
@@ -747,7 +811,7 @@
     // 足踏みするうしろ足（体より先に描き、体の下からのぞかせる）
     if (walking) {
       ctx.fillStyle = '#e8793a';
-      const step = Math.sin(mg.walkPhase) * 10;
+      const step = Math.sin(walkSource.walkPhase) * 10;
       ctx.beginPath();
       ctx.ellipse(-15, 56 - step * 0.4, 9, 6, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -1086,7 +1150,7 @@
     if (state.stage === EGG_STAGE) {
       drawEgg(W / 2, groundY());
     } else {
-      drawFox(state.minigame ? state.minigame.foxX : W / 2, groundY());
+      drawFox(currentFoxX(), groundY());
     }
     drawHearts();
     drawSnacks();
