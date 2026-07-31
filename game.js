@@ -56,6 +56,10 @@
     // --- 睡眠中に時間経過を早める倍率（他ステータスの減少にも掛かる） ---
     sleepTimeScale: 1.6,
 
+    // --- たまご ---
+    hatchPerTap: 14,     // 「あたためる」1回で増える孵化度
+    hatchCooldown: 0.15, // 連打防止（秒）
+
     // --- 成長 ---
     // 平均ステータスがこの値以上を保てている時間だけ「良いお世話の時間」として積み上がる
     careGrowthMinAvg: 55,
@@ -68,7 +72,9 @@
     tailWagSpeed: 3.2        // しっぽを振る速さ（機嫌が良いほど速く振れる）
   };
 
-  const STAGE_NAMES = ['こぎつね', 'わかぎつね', 'せいじゅうのきつね'];
+  // ステージ0はまだ狐になっていない「たまご」。あたため続けると孵化する
+  const STAGE_NAMES = ['たまご', 'こぎつね', 'わかぎつね', 'せいじゅうのきつね'];
+  const EGG_STAGE = 0;
 
   // ---------- ゲームの状態(state) ----------
   const stats = {
@@ -79,7 +85,8 @@
   };
 
   const state = {
-    stage: 0,             // 0:子狐 1:若狐 2:成獣狐
+    stage: EGG_STAGE,      // 0:たまご 1:子狐 2:若狐 3:成獣狐
+    hatchProgress: 0,      // たまごのあたため度（0〜100。100で孵化）
     sleeping: false,
     goodCareSeconds: 0,   // 「良いお世話」が続いた累計秒数（この値で成長判定する）
     elapsed: 0,           // プレイ開始からの経過秒数（表示用）
@@ -88,7 +95,7 @@
     bannerTimer: 0,
     bannerText: '',
     reachedAdult: false,
-    cooldown: { feed: 0, play: 0, clean: 0 }
+    cooldown: { feed: 0, play: 0, clean: 0, warm: 0 }
   };
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -98,14 +105,16 @@
     feed: { x: 0, y: 0, w: 0, h: 0, label: 'エサ', key: 'feed' },
     play: { x: 0, y: 0, w: 0, h: 0, label: 'あそぶ', key: 'play' },
     clean: { x: 0, y: 0, w: 0, h: 0, label: 'そうじ', key: 'clean' },
-    sleep: { x: 0, y: 0, w: 0, h: 0, label: 'ねる', key: 'sleep' }
+    sleep: { x: 0, y: 0, w: 0, h: 0, label: 'ねる', key: 'sleep' },
+    warm: { x: 0, y: 0, w: 0, h: 0, label: 'あたためる', key: 'warm' }
   };
 
   const KEY_ACTIONS = {
     Digit1: 'feed', KeyF: 'feed',
     Digit2: 'play', KeyP: 'play',
     Digit3: 'clean', KeyC: 'clean',
-    Digit4: 'sleep', KeyS: 'sleep'
+    Digit4: 'sleep', KeyS: 'sleep',
+    Space: 'warm', KeyW: 'warm'
   };
 
   function layoutButtons() {
@@ -123,6 +132,14 @@
       buttons[key].h = h;
       x += w + gap;
     }
+
+    // たまご専用の大きなボタン（お世話ボタンと同じ列の中央に配置）
+    const warmW = Math.min(220, W - gap * 2);
+    const warmH = h;
+    buttons.warm.x = (W - warmW) / 2;
+    buttons.warm.y = y;
+    buttons.warm.w = warmW;
+    buttons.warm.h = warmH;
   }
 
   function localPos(clientX, clientY) {
@@ -166,10 +183,24 @@
     triggerBounce();
   }
 
-  const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep };
+  function doWarm() {
+    if (state.stage !== EGG_STAGE || state.cooldown.warm > 0) return;
+    state.hatchProgress = clamp(state.hatchProgress + CONFIG.hatchPerTap, 0, 100);
+    state.cooldown.warm = CONFIG.hatchCooldown;
+    triggerBounce();
+    if (state.hatchProgress >= 100) {
+      state.stage = 1;
+      state.hatchProgress = 0;
+      state.bannerTimer = CONFIG.bannerDuration;
+      state.bannerText = 'たまごがかえりました！';
+    }
+  }
+
+  const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm };
 
   function handlePointerDown(pos) {
-    for (const key of ['feed', 'play', 'clean', 'sleep']) {
+    const keys = state.stage === EGG_STAGE ? ['warm'] : ['feed', 'play', 'clean', 'sleep'];
+    for (const key of keys) {
       if (inRect(pos.x, pos.y, buttons[key])) {
         ACTIONS[key]();
         return;
@@ -230,11 +261,12 @@
   }
 
   function updateGrowth(dt) {
+    if (state.stage === EGG_STAGE) return; // 孵化は doWarm() が扱う
     if (state.stage >= STAGE_NAMES.length - 1) return;
     if (averageStat() >= CONFIG.careGrowthMinAvg) {
       state.goodCareSeconds += dt;
     }
-    const need = CONFIG.growthStageSeconds[state.stage];
+    const need = CONFIG.growthStageSeconds[state.stage - 1];
     if (state.goodCareSeconds >= need) {
       state.stage += 1;
       state.goodCareSeconds = 0;
@@ -257,7 +289,7 @@
     state.tailPhase += dt * CONFIG.tailWagSpeed * (0.4 + stats.mood / 100);
     if (state.bannerTimer > 0) state.bannerTimer = Math.max(0, state.bannerTimer - dt);
 
-    updateStats(dt);
+    if (state.stage !== EGG_STAGE) updateStats(dt);
     updateGrowth(dt);
   }
 
@@ -286,9 +318,56 @@
     ctx.fillRect(0, groundY, W, H - groundY);
   }
 
+  // たまごを図形合成で描く（あたため度に応じてひび割れが増え、演出でわずかに揺れる）
+  function drawEgg(cx, cy) {
+    const wobble = Math.sin(Math.min(1, state.bounce) * Math.PI * 3) * (state.bounce > 0 ? 8 : 0);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((wobble * Math.PI) / 180);
+
+    ctx.fillStyle = '#fdf3d8';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 44, 56, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#d8c48f';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.fillStyle = '#f2934f';
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.ellipse(-14, -18, 8, 11, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(10, 14, 6, 8, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // あたため度に応じてひびを増やす
+    const progress = state.hatchProgress;
+    ctx.strokeStyle = '#9c8558';
+    ctx.lineWidth = 2.5;
+    if (progress >= 30) {
+      ctx.beginPath();
+      ctx.moveTo(-6, -40);
+      ctx.lineTo(2, -14);
+      ctx.lineTo(-10, 2);
+      ctx.stroke();
+    }
+    if (progress >= 65) {
+      ctx.beginPath();
+      ctx.moveTo(18, -30);
+      ctx.lineTo(8, -6);
+      ctx.lineTo(20, 20);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
   // 成長段階と機嫌に応じて狐を図形合成で描く
   function drawFox(cx, cy) {
-    const stage = state.stage;
+    const stage = state.stage - 1; // 0:子狐 1:若狐 2:成獣狐（たまごは別関数で描く）
     const scale = 0.62 + stage * 0.24;     // 成長するほど大きくなる
     const bounceY = Math.sin(Math.min(1, state.bounce) * Math.PI) * 18;
     const y = cy - bounceY;
@@ -410,6 +489,19 @@
     ctx.fillStyle = '#2a1c14';
     ctx.fillText(`${STAGE_NAMES[state.stage]}${state.sleeping ? '（おやすみ中）' : ''}`, pad, pad);
 
+    if (state.stage === EGG_STAGE) {
+      ctx.font = '12px sans-serif';
+      ctx.fillText('あたため度', pad, y);
+      const bx = pad + 74;
+      drawRoundRect(bx, y - barH / 2, barW - 74, barH, 6);
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fill();
+      drawRoundRect(bx, y - barH / 2, (barW - 74) * (state.hatchProgress / 100), barH, 6);
+      ctx.fillStyle = '#ffb84d';
+      ctx.fill();
+      return;
+    }
+
     for (const bar of STAT_BARS) {
       const v = stats[bar.key];
       ctx.font = '12px sans-serif';
@@ -430,6 +522,21 @@
   }
 
   function drawButtons() {
+    if (state.stage === EGG_STAGE) {
+      const b = buttons.warm;
+      drawRoundRect(b.x, b.y, b.w, b.h, 12);
+      ctx.fillStyle = state.cooldown.warm > 0 ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.92)';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#2a1c14';
+      ctx.stroke();
+      ctx.fillStyle = '#2a1c14';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+      return;
+    }
     for (const key of ['feed', 'play', 'clean', 'sleep']) {
       const b = buttons[key];
       const cooling = state.cooldown[key] > 0;
@@ -471,7 +578,11 @@
 
   function draw() {
     drawBackground();
-    drawFox(W / 2, H * 0.46);
+    if (state.stage === EGG_STAGE) {
+      drawEgg(W / 2, H * 0.46);
+    } else {
+      drawFox(W / 2, H * 0.46);
+    }
     drawStatusBars();
     drawButtons();
     drawGrowthBanner();
