@@ -43,10 +43,17 @@
 
     // --- 操作で変化する量 ---
     feedAmount: 30,        // エサやり1回で増える満腹度
-    playMoodAmount: 22,     // 遊ぶ1回で増える機嫌
-    playEnergyCost: 14,     // 遊ぶ1回で減る体力
-    playSatietyCost: 6,     // 遊ぶ1回で減る満腹度（お腹がすく）
+    playEnergyCost: 14,     // 「あそぶ」ミニゲーム1回で減る体力（結果に関わらず一定）
+    playSatietyCost: 6,     // 「あそぶ」ミニゲーム1回で減る満腹度（お腹がすく。結果に関わらず一定）
     cleanAmount: 35,        // 掃除1回で増える清潔度
+
+    // --- あそぶ（どんぐりキャッチのミニゲーム） ---
+    playMinigameDuration: 8,  // ミニゲームの時間（秒）
+    acornSpawnInterval: 0.65, // どんぐりが降ってくる間隔（秒）
+    acornFallSpeed: 150,      // どんぐりの落下速度（px/秒）
+    acornRadius: 16,          // どんぐりの大きさ（タップ判定にも使う）
+    moodPerCatch: 6,          // どんぐり1個キャッチするごとに増える機嫌
+    missedMoodPenalty: 2,     // どんぐりを取りこぼすと減る機嫌
 
     // --- 操作のクールダウン（連打防止・秒） ---
     feedCooldown: 1.2,
@@ -115,6 +122,7 @@
     bannerText: '',
     reachedAdult: false,
     hearts: [],           // なでたときのハート演出
+    minigame: null,       // 「あそぶ」中のどんぐりキャッチの状態（非nullの間だけ進行中）
     cooldown: { feed: 0, play: 0, clean: 0, warm: 0, pet: 0 }
   };
 
@@ -197,12 +205,43 @@
     triggerBounce();
   }
 
+  // 「あそぶ」= どんぐりキャッチのミニゲームを開始する（病気の間は遊べない）
   function doPlay() {
-    if (state.sleeping || state.sick || state.cooldown.play > 0) return; // 病気の間は遊べない
-    stats.mood = clamp(stats.mood + CONFIG.playMoodAmount, 0, 100);
+    if (state.sleeping || state.sick || state.cooldown.play > 0 || state.minigame) return;
+    state.cooldown.play = CONFIG.playCooldown;
+    state.minigame = {
+      timeLeft: CONFIG.playMinigameDuration,
+      spawnTimer: 0,
+      score: 0,
+      missed: 0,
+      acorns: []
+    };
+  }
+
+  // ミニゲーム中に降ってくるどんぐりをタップで捕まえる
+  function tryCatchAcorn(pos) {
+    const mg = state.minigame;
+    if (!mg) return;
+    for (const a of mg.acorns) {
+      if (a.caught) continue;
+      if (Math.hypot(pos.x - a.x, pos.y - a.y) < CONFIG.acornRadius + 16) {
+        a.caught = true;
+        a.fade = 1;
+        mg.score += 1;
+        return;
+      }
+    }
+  }
+
+  function finishMinigame() {
+    const mg = state.minigame;
+    const moodDelta = mg.score * CONFIG.moodPerCatch - mg.missed * CONFIG.missedMoodPenalty;
+    stats.mood = clamp(stats.mood + moodDelta, 0, 100);
     stats.energy = clamp(stats.energy - CONFIG.playEnergyCost, 0, 100);
     stats.satiety = clamp(stats.satiety - CONFIG.playSatietyCost, 0, 100);
-    state.cooldown.play = CONFIG.playCooldown;
+    state.minigame = null;
+    state.bannerTimer = CONFIG.bannerDuration;
+    state.bannerText = `どんぐり${mg.score}こキャッチ！`;
     triggerBounce();
   }
 
@@ -265,6 +304,11 @@
   const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm, medicine: doMedicine };
 
   function handlePointerDown(pos) {
+    // ミニゲーム中はどんぐりのタップだけを受け付ける（他の操作は行えない）
+    if (state.minigame) {
+      tryCatchAcorn(pos);
+      return;
+    }
     const keys = state.stage === EGG_STAGE ? ['warm'] : ['feed', 'play', 'clean', 'sleep'];
     if (state.sick) keys.push('medicine');
     for (const key of keys) {
@@ -289,6 +333,7 @@
     handlePointerDown(localPos(e.clientX, e.clientY));
   }
   function onKeyDown(e) {
+    if (state.minigame) return; // ミニゲーム中はタップでのみキャッチできる
     const action = KEY_ACTIONS[e.code];
     if (action) {
       e.preventDefault();
@@ -346,6 +391,39 @@
     }
   }
 
+  // どんぐりキャッチのミニゲームの進行（出現・落下・取りこぼし判定）
+  function updateMinigame(dt) {
+    const mg = state.minigame;
+    if (!mg) return;
+
+    mg.timeLeft -= dt;
+    if (mg.timeLeft <= 0) {
+      finishMinigame();
+      return;
+    }
+
+    mg.spawnTimer -= dt;
+    if (mg.spawnTimer <= 0) {
+      mg.spawnTimer = CONFIG.acornSpawnInterval;
+      mg.acorns.push({ x: 34 + Math.random() * (W - 68), y: -20, caught: false });
+    }
+
+    const gy = groundY();
+    for (const a of mg.acorns) {
+      if (a.caught) {
+        a.y -= 70 * dt;
+        a.fade -= dt * 2;
+      } else {
+        a.y += CONFIG.acornFallSpeed * dt;
+        if (a.y - CONFIG.acornRadius > gy) {
+          a.missed = true;
+          mg.missed += 1;
+        }
+      }
+    }
+    mg.acorns = mg.acorns.filter(a => !a.missed && !(a.caught && a.fade <= 0));
+  }
+
   function updateGrowth(dt) {
     if (state.stage === EGG_STAGE) return; // 孵化は doWarm() が扱う
     if (state.stage >= STAGE_NAMES.length - 1) return;
@@ -387,6 +465,7 @@
       updateStats(dt);
       updateSickness(dt);
     }
+    updateMinigame(dt);
     updateGrowth(dt);
   }
 
@@ -707,6 +786,28 @@
     ctx.restore();
   }
 
+  // どんぐりキャッチのミニゲームで降ってくるどんぐり
+  function drawAcorns() {
+    const mg = state.minigame;
+    if (!mg) return;
+    for (const a of mg.acorns) {
+      ctx.save();
+      ctx.globalAlpha = a.caught ? Math.max(0, a.fade) : 1;
+      ctx.translate(a.x, a.y);
+      // 実
+      ctx.fillStyle = '#c9832f';
+      ctx.beginPath();
+      ctx.ellipse(0, 3, CONFIG.acornRadius * 0.8, CONFIG.acornRadius, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 帽子（ぎざぎざの殻斗）
+      ctx.fillStyle = '#7a5230';
+      ctx.beginPath();
+      ctx.arc(0, -CONFIG.acornRadius * 0.35, CONFIG.acornRadius * 0.85, Math.PI, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   // なでたときのハート
   function drawHearts() {
     ctx.fillStyle = '#ff6f9c';
@@ -747,7 +848,7 @@
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 16px sans-serif';
     ctx.fillStyle = textColor;
-    const suffix = state.sick ? '（びょうき）' : state.sleeping ? '（おやすみ中）' : '';
+    const suffix = state.minigame ? '（あそんでいる）' : state.sick ? '（びょうき）' : state.sleeping ? '（おやすみ中）' : '';
     ctx.fillText(`${STAGE_NAMES[state.stage]}${suffix}`, pad, pad);
 
     if (state.stage === EGG_STAGE) {
@@ -782,7 +883,33 @@
     }
   }
 
+  // ミニゲーム中はボタンの代わりに残り時間とスコアを表示する
+  function drawMinigameHud() {
+    const mg = state.minigame;
+    const barH = Math.max(90, Math.min(130, Math.round(H * 0.16)));
+    const y = H - barH / 2;
+    const barW = Math.min(260, W - 40);
+    const bx = (W - barW) / 2;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillStyle = isNight() ? '#f5ead8' : '#2a1c14';
+    ctx.fillText(`どんぐりキャッチ！ スコア: ${mg.score}`, W / 2, y - 22);
+
+    drawRoundRect(bx, y, barW, 14, 7);
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fill();
+    drawRoundRect(bx, y, barW * Math.max(0, mg.timeLeft / CONFIG.playMinigameDuration), 14, 7);
+    ctx.fillStyle = '#ffb84d';
+    ctx.fill();
+  }
+
   function drawButtons() {
+    if (state.minigame) {
+      drawMinigameHud();
+      return;
+    }
     if (state.stage === EGG_STAGE) {
       const b = buttons.warm;
       drawRoundRect(b.x, b.y, b.w, b.h, 12);
@@ -861,6 +988,7 @@
       drawFox(W / 2, groundY());
     }
     drawHearts();
+    drawAcorns();
     drawStatusBars();
     drawButtons();
     drawGrowthBanner();
