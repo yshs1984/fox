@@ -60,6 +60,21 @@
     hatchPerTap: 14,     // 「あたためる」1回で増える孵化度
     hatchCooldown: 0.15, // 連打防止（秒）
 
+    // --- なでる（狐を直接タップ） ---
+    petMoodAmount: 6,    // なでる1回で増える機嫌
+    petCooldown: 0.5,    // 連打防止（秒）
+
+    // --- 病気 ---
+    // お世話不足（いずれかのステータスがしきい値未満）の間、1秒ごとにこの確率で病気になる
+    sickChancePerSec: 0.03,
+    sickMoodDecayMult: 2.2,   // 病気の間、機嫌の減りが何倍になるか
+    sickEnergyDecayMult: 2.0, // 病気の間、体力の減りが何倍になるか
+
+    // --- 朝夜のサイクル ---
+    dayLengthSec: 70,    // 昼の長さ（秒）
+    nightLengthSec: 35,  // 夜の長さ（秒）
+    nightSleepBonus: 1.6, // 夜に寝ると体力回復が何倍になるか
+
     // --- 成長 ---
     // 平均ステータスがこの値以上を保てている時間だけ「良いお世話の時間」として積み上がる
     careGrowthMinAvg: 55,
@@ -88,15 +103,23 @@
     stage: EGG_STAGE,      // 0:たまご 1:子狐 2:若狐 3:成獣狐
     hatchProgress: 0,      // たまごのあたため度（0〜100。100で孵化）
     sleeping: false,
+    sick: false,
     goodCareSeconds: 0,   // 「良いお世話」が続いた累計秒数（この値で成長判定する）
-    elapsed: 0,           // プレイ開始からの経過秒数（表示用）
+    elapsed: 0,           // プレイ開始からの経過秒数（朝夜サイクルにも使う）
     bounce: 0,            // お世話演出のジャンプ量(0〜1、減衰していく)
     tailPhase: 0,
     bannerTimer: 0,
     bannerText: '',
     reachedAdult: false,
-    cooldown: { feed: 0, play: 0, clean: 0, warm: 0 }
+    hearts: [],           // なでたときのハート演出
+    cooldown: { feed: 0, play: 0, clean: 0, warm: 0, pet: 0 }
   };
+
+  // 今が夜かどうか（昼→夜を dayLengthSec+nightLengthSec の周期で繰り返す）
+  function isNight() {
+    const cycle = CONFIG.dayLengthSec + CONFIG.nightLengthSec;
+    return state.elapsed % cycle >= CONFIG.dayLengthSec;
+  }
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -106,7 +129,8 @@
     play: { x: 0, y: 0, w: 0, h: 0, label: 'あそぶ', key: 'play' },
     clean: { x: 0, y: 0, w: 0, h: 0, label: 'そうじ', key: 'clean' },
     sleep: { x: 0, y: 0, w: 0, h: 0, label: 'ねる', key: 'sleep' },
-    warm: { x: 0, y: 0, w: 0, h: 0, label: 'あたためる', key: 'warm' }
+    warm: { x: 0, y: 0, w: 0, h: 0, label: 'あたためる', key: 'warm' },
+    medicine: { x: 0, y: 0, w: 0, h: 0, label: 'くすり', key: 'medicine' }
   };
 
   const KEY_ACTIONS = {
@@ -114,7 +138,8 @@
     Digit2: 'play', KeyP: 'play',
     Digit3: 'clean', KeyC: 'clean',
     Digit4: 'sleep', KeyS: 'sleep',
-    Space: 'warm', KeyW: 'warm'
+    Space: 'warm', KeyW: 'warm',
+    Digit5: 'medicine', KeyM: 'medicine'
   };
 
   function layoutButtons() {
@@ -140,6 +165,13 @@
     buttons.warm.y = y;
     buttons.warm.w = warmW;
     buttons.warm.h = warmH;
+
+    // 病気のときだけ表示する「くすり」ボタン（お世話ボタン列の上の中央）
+    const medW = Math.min(160, W - gap * 2);
+    buttons.medicine.x = (W - medW) / 2;
+    buttons.medicine.y = y - h - gap;
+    buttons.medicine.w = medW;
+    buttons.medicine.h = h;
   }
 
   function localPos(clientX, clientY) {
@@ -163,7 +195,7 @@
   }
 
   function doPlay() {
-    if (state.sleeping || state.cooldown.play > 0) return;
+    if (state.sleeping || state.sick || state.cooldown.play > 0) return; // 病気の間は遊べない
     stats.mood = clamp(stats.mood + CONFIG.playMoodAmount, 0, 100);
     stats.energy = clamp(stats.energy - CONFIG.playEnergyCost, 0, 100);
     stats.satiety = clamp(stats.satiety - CONFIG.playSatietyCost, 0, 100);
@@ -196,15 +228,48 @@
     }
   }
 
-  const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm };
+  function doMedicine() {
+    if (!state.sick) return;
+    state.sick = false;
+    stats.mood = clamp(stats.mood + 10, 0, 100); // 治ると少し機嫌が良くなる
+    state.bannerTimer = CONFIG.bannerDuration;
+    state.bannerText = 'びょうきがなおりました！';
+    triggerBounce();
+  }
+
+  // 狐を直接なでる（寝ている間や病気のときもなでられる）
+  function doPet() {
+    if (state.stage === EGG_STAGE || state.cooldown.pet > 0) return;
+    stats.mood = clamp(stats.mood + CONFIG.petMoodAmount, 0, 100);
+    state.cooldown.pet = CONFIG.petCooldown;
+    state.hearts.push({
+      x: W / 2 + (Math.random() - 0.5) * 60,
+      y: H * 0.36,
+      life: 1
+    });
+  }
+
+  // 狐が描かれているあたりのタップ判定（ざっくり円で判定する）
+  function inFoxArea(px, py) {
+    const dx = px - W / 2;
+    const dy = py - H * 0.46;
+    return Math.hypot(dx, dy) < 110;
+  }
+
+  const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm, medicine: doMedicine };
 
   function handlePointerDown(pos) {
     const keys = state.stage === EGG_STAGE ? ['warm'] : ['feed', 'play', 'clean', 'sleep'];
+    if (state.sick) keys.push('medicine');
     for (const key of keys) {
       if (inRect(pos.x, pos.y, buttons[key])) {
         ACTIONS[key]();
         return;
       }
+    }
+    // ボタン以外で狐に触れたら「なでる」
+    if (state.stage !== EGG_STAGE && inFoxArea(pos.x, pos.y)) {
+      doPet();
     }
   }
 
@@ -247,22 +312,38 @@
     const mult = lowStatMultiplier();
     const timeScale = state.sleeping ? CONFIG.sleepTimeScale : 1;
     const sdt = dt * timeScale;
+    const moodMult = state.sick ? CONFIG.sickMoodDecayMult : 1;
+    const energyMult = state.sick ? CONFIG.sickEnergyDecayMult : 1;
 
     stats.satiety = clamp(stats.satiety - CONFIG.satietyDecayPerSec * mult * sdt, 0, 100);
-    stats.mood = clamp(stats.mood - CONFIG.moodDecayPerSec * mult * sdt, 0, 100);
+    stats.mood = clamp(stats.mood - CONFIG.moodDecayPerSec * mult * moodMult * sdt, 0, 100);
     stats.cleanliness = clamp(stats.cleanliness - CONFIG.cleanlinessDecayPerSec * mult * sdt, 0, 100);
 
     if (state.sleeping) {
-      stats.energy = clamp(stats.energy + CONFIG.energyRecoverPerSecSleep * dt, 0, 100);
+      const bonus = isNight() ? CONFIG.nightSleepBonus : 1; // 夜に寝るとよく回復する
+      stats.energy = clamp(stats.energy + CONFIG.energyRecoverPerSecSleep * bonus * dt, 0, 100);
       if (stats.energy >= 100) state.sleeping = false; // 満タンになったら自然に起きる
     } else {
-      stats.energy = clamp(stats.energy - CONFIG.energyDecayPerSecAwake * mult * dt, 0, 100);
+      stats.energy = clamp(stats.energy - CONFIG.energyDecayPerSecAwake * mult * energyMult * dt, 0, 100);
+    }
+  }
+
+  // お世話不足が続いていると、確率で病気になる
+  function updateSickness(dt) {
+    if (state.sick) return;
+    if (lowStatMultiplier() === 1) return; // どのステータスも足りていれば病気にならない
+    if (Math.random() < CONFIG.sickChancePerSec * dt) {
+      state.sick = true;
+      state.sleeping = false;
+      state.bannerTimer = CONFIG.bannerDuration;
+      state.bannerText = 'びょうきになってしまった…';
     }
   }
 
   function updateGrowth(dt) {
     if (state.stage === EGG_STAGE) return; // 孵化は doWarm() が扱う
     if (state.stage >= STAGE_NAMES.length - 1) return;
+    if (state.sick) return; // 病気の間は成長が止まる
     if (averageStat() >= CONFIG.careGrowthMinAvg) {
       state.goodCareSeconds += dt;
     }
@@ -289,7 +370,17 @@
     state.tailPhase += dt * CONFIG.tailWagSpeed * (0.4 + stats.mood / 100);
     if (state.bannerTimer > 0) state.bannerTimer = Math.max(0, state.bannerTimer - dt);
 
-    if (state.stage !== EGG_STAGE) updateStats(dt);
+    // なでたときのハートを浮かせながら消していく
+    for (const hrt of state.hearts) {
+      hrt.y -= 40 * dt;
+      hrt.life -= dt / 1.2;
+    }
+    state.hearts = state.hearts.filter(hrt => hrt.life > 0);
+
+    if (state.stage !== EGG_STAGE) {
+      updateStats(dt);
+      updateSickness(dt);
+    }
     updateGrowth(dt);
   }
 
@@ -305,15 +396,49 @@
   }
 
   function drawBackground() {
+    const night = isNight();
     const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, '#bfe3ff');
-    grad.addColorStop(0.6, '#eaf7e0');
-    grad.addColorStop(1, '#cdeab0');
+    if (night) {
+      grad.addColorStop(0, '#1a2450');
+      grad.addColorStop(0.6, '#2c3a66');
+      grad.addColorStop(1, '#31504a');
+    } else {
+      grad.addColorStop(0, '#bfe3ff');
+      grad.addColorStop(0.6, '#eaf7e0');
+      grad.addColorStop(1, '#cdeab0');
+    }
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
+    if (night) {
+      // 月と星
+      ctx.fillStyle = '#fdf3c8';
+      ctx.beginPath();
+      ctx.arc(W * 0.8, H * 0.13, 26, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2c3a66';
+      ctx.beginPath();
+      ctx.arc(W * 0.8 + 12, H * 0.13 - 6, 22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff6d8';
+      for (let i = 0; i < 18; i++) {
+        // 位置は毎フレーム同じになるよう固定の擬似乱数で決める
+        const sx = ((i * 137.5) % 360) / 360 * W;
+        const sy = ((i * 89.3) % 200) / 360 * H + H * 0.03;
+        ctx.globalAlpha = 0.5 + ((i * 53) % 50) / 100;
+        ctx.fillRect(sx, sy, 2.5, 2.5);
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      // 太陽
+      ctx.fillStyle = '#ffe08a';
+      ctx.beginPath();
+      ctx.arc(W * 0.82, H * 0.12, 30, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // 地面
-    ctx.fillStyle = '#9fd47c';
+    ctx.fillStyle = night ? '#4a6b4e' : '#9fd47c';
     const groundY = H * 0.72;
     ctx.fillRect(0, groundY, W, H - groundY);
   }
@@ -365,14 +490,88 @@
     ctx.restore();
   }
 
+  // 横になって眠っている狐（丸くなった姿と Zzz を描く）
+  function drawFoxSleeping(cx, cy, scale) {
+    ctx.save();
+    ctx.translate(cx, cy + 30 * scale);
+    ctx.scale(scale, scale);
+
+    // 丸くなった体（横長の楕円）
+    ctx.fillStyle = '#f2934f';
+    ctx.beginPath();
+    ctx.ellipse(0, 20, 62, 34, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 体に巻き付けたしっぽ
+    ctx.fillStyle = '#e8793a';
+    ctx.beginPath();
+    ctx.ellipse(30, 34, 34, 14, 0.25, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(56, 40, 11, 8, 0.25, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 頭（横向きに体へ乗せる）
+    ctx.fillStyle = '#f2934f';
+    ctx.beginPath();
+    ctx.ellipse(-34, 2, 30, 26, -0.15, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 耳
+    for (const side of [-1, 1]) {
+      ctx.fillStyle = '#f2934f';
+      ctx.beginPath();
+      ctx.moveTo(-34 + side * 14, -18);
+      ctx.lineTo(-34 + side * 26, -42);
+      ctx.lineTo(-34 + side * 2, -24);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 閉じた目と口
+    ctx.strokeStyle = '#2a1c14';
+    ctx.lineWidth = 2.5;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.arc(-34 + side * 11, -2, 5, Math.PI * 0.15, Math.PI * 0.85);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#3a2a22';
+    ctx.beginPath();
+    ctx.ellipse(-34, 10, 4, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+
+    // Zzz（ゆっくり浮かんで揺れる）
+    const t = state.elapsed;
+    ctx.fillStyle = 'rgba(42,28,20,0.7)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < 3; i++) {
+      const phase = (t * 0.7 + i * 0.33) % 1;
+      ctx.font = `bold ${14 + i * 6}px sans-serif`;
+      ctx.globalAlpha = 1 - phase;
+      ctx.fillText('Z', cx + 50 + i * 18 + Math.sin(t * 2 + i) * 4, cy - 40 - phase * 30 - i * 14);
+    }
+    ctx.globalAlpha = 1;
+  }
+
   // 成長段階と機嫌に応じて狐を図形合成で描く
   function drawFox(cx, cy) {
     const stage = state.stage - 1; // 0:子狐 1:若狐 2:成獣狐（たまごは別関数で描く）
     const scale = 0.62 + stage * 0.24;     // 成長するほど大きくなる
+
+    if (state.sleeping) {
+      drawFoxSleeping(cx, cy, scale);
+      return;
+    }
+
     const bounceY = Math.sin(Math.min(1, state.bounce) * Math.PI) * 18;
     const y = cy - bounceY;
-    const happy = stats.mood >= 55;
-    const sad = stats.mood < CONFIG.lowStatThreshold;
+    const happy = !state.sick && stats.mood >= 55;
+    const sad = state.sick || stats.mood < CONFIG.lowStatThreshold;
 
     ctx.save();
     ctx.translate(cx, y);
@@ -466,7 +665,42 @@
     }
     ctx.stroke();
 
+    // 病気のとき: 汗としんどそうな顔の赤み
+    if (state.sick) {
+      ctx.fillStyle = '#7db6e8';
+      ctx.beginPath();
+      ctx.ellipse(30, -40 + Math.sin(state.elapsed * 4) * 3, 5, 8, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(230,100,90,0.4)';
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse(side * 22, -10, 7, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
+  }
+
+  // なでたときのハート
+  function drawHearts() {
+    ctx.fillStyle = '#ff6f9c';
+    for (const hrt of state.hearts) {
+      ctx.globalAlpha = Math.max(0, hrt.life);
+      const s = 8;
+      ctx.save();
+      ctx.translate(hrt.x, hrt.y);
+      ctx.beginPath();
+      ctx.arc(-s / 2, 0, s / 2, 0, Math.PI * 2);
+      ctx.arc(s / 2, 0, s / 2, 0, Math.PI * 2);
+      ctx.moveTo(-s, 2);
+      ctx.lineTo(0, s * 1.3);
+      ctx.lineTo(s, 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
   }
 
   const STAT_BARS = [
@@ -483,11 +717,13 @@
     const gap = 8;
     let y = pad + 30;
 
+    const textColor = isNight() ? '#f5ead8' : '#2a1c14';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 16px sans-serif';
-    ctx.fillStyle = '#2a1c14';
-    ctx.fillText(`${STAGE_NAMES[state.stage]}${state.sleeping ? '（おやすみ中）' : ''}`, pad, pad);
+    ctx.fillStyle = textColor;
+    const suffix = state.sick ? '（びょうき）' : state.sleeping ? '（おやすみ中）' : '';
+    ctx.fillText(`${STAGE_NAMES[state.stage]}${suffix}`, pad, pad);
 
     if (state.stage === EGG_STAGE) {
       ctx.font = '12px sans-serif';
@@ -505,7 +741,7 @@
     for (const bar of STAT_BARS) {
       const v = stats[bar.key];
       ctx.font = '12px sans-serif';
-      ctx.fillStyle = '#2a1c14';
+      ctx.fillStyle = textColor;
       ctx.fillText(bar.label, pad, y);
 
       const bx = pad + 74;
@@ -540,7 +776,7 @@
     for (const key of ['feed', 'play', 'clean', 'sleep']) {
       const b = buttons[key];
       const cooling = state.cooldown[key] > 0;
-      const locked = state.sleeping && key !== 'sleep';
+      const locked = (state.sleeping && key !== 'sleep') || (state.sick && key === 'play');
       const active = key === 'sleep' && state.sleeping;
 
       drawRoundRect(b.x, b.y, b.w, b.h, 12);
@@ -551,6 +787,22 @@
       ctx.stroke();
 
       ctx.fillStyle = active ? '#ffffff' : '#2a1c14';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+    }
+
+    // 病気のときだけ「くすり」ボタンを出す
+    if (state.sick) {
+      const b = buttons.medicine;
+      drawRoundRect(b.x, b.y, b.w, b.h, 12);
+      ctx.fillStyle = '#7db6e8';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#2a1c14';
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 16px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -583,6 +835,7 @@
     } else {
       drawFox(W / 2, H * 0.46);
     }
+    drawHearts();
     drawStatusBars();
     drawButtons();
     drawGrowthBanner();
