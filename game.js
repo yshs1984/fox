@@ -225,7 +225,10 @@
       missed: 0,
       acorns: [],
       foxX: W / 2,
-      targetX: W / 2
+      targetX: W / 2,
+      walkPhase: 0,   // 歩きモーションの周期
+      facing: 1,      // 直近の移動方向（1:右 -1:左）
+      walking: false  // 今のフレームで動いているか
     };
   }
 
@@ -426,7 +429,14 @@
     }
 
     // 狐を目標位置（指でドラッグした場所）へなめらかに寄せる
+    const prevFoxX = mg.foxX;
     mg.foxX += (mg.targetX - mg.foxX) * Math.min(1, dt * CONFIG.foxMoveEase);
+    const moveDelta = mg.foxX - prevFoxX;
+    mg.walking = Math.abs(moveDelta) > 0.1;
+    if (mg.walking) {
+      mg.facing = moveDelta > 0 ? 1 : -1;
+      mg.walkPhase += dt * (10 + Math.min(18, Math.abs(moveDelta) * 3)); // 動きが速いほど歩幅が早まる
+    }
 
     mg.spawnTimer -= dt;
     if (mg.spawnTimer <= 0) {
@@ -718,13 +728,33 @@
     drawShadow(cx, gy, 48 * scale);
     const footY = gy - 64 * scale; // 体の下端（足元）がここに来るよう合わせる
     const bounceY = Math.sin(Math.min(1, state.bounce) * Math.PI) * 18;
-    const y = footY - bounceY;
+
+    // 歩いている間は体をぴょこぴょこ弾ませ、左右に少し揺らして歩いている感じを出す
+    const mg = state.minigame;
+    const walking = !!(mg && mg.walking);
+    const walkBob = walking ? Math.abs(Math.sin(mg.walkPhase)) * 6 : 0;
+    const walkLean = walking ? Math.sin(mg.walkPhase) * 5 : 0; // 度
+
+    const y = footY - bounceY - walkBob;
     const happy = !state.sick && stats.mood >= 55;
     const sad = state.sick || stats.mood < CONFIG.lowStatThreshold;
 
     ctx.save();
     ctx.translate(cx, y);
+    ctx.rotate((walkLean * Math.PI) / 180);
     ctx.scale(scale, scale);
+
+    // 足踏みするうしろ足（体より先に描き、体の下からのぞかせる）
+    if (walking) {
+      ctx.fillStyle = '#e8793a';
+      const step = Math.sin(mg.walkPhase) * 10;
+      ctx.beginPath();
+      ctx.ellipse(-15, 56 - step * 0.4, 9, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(15, 56 + step * 0.4, 9, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // しっぽ（機嫌が良いほど大きく振れる）
     const tailSwing = Math.sin(state.tailPhase) * (sad ? 6 : 20);
