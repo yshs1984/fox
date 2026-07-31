@@ -84,7 +84,10 @@
     // --- 演出 ---
     bounceDuration: 0.4,     // お世話操作をしたときのジャンプ演出の長さ（秒）
     bannerDuration: 2.4,     // 成長バナーの表示時間（秒）
-    tailWagSpeed: 3.2        // しっぽを振る速さ（機嫌が良いほど速く振れる）
+    tailWagSpeed: 3.2,       // しっぽを振る速さ（機嫌が良いほど速く振れる）
+
+    // --- レイアウト ---
+    groundRatio: 0.72        // 地面の開始位置（画面の高さに対する割合）。キャラクターの足元をここに合わせる
   };
 
   // ステージ0はまだ狐になっていない「たまご」。あたため続けると孵化する
@@ -244,15 +247,18 @@
     state.cooldown.pet = CONFIG.petCooldown;
     state.hearts.push({
       x: W / 2 + (Math.random() - 0.5) * 60,
-      y: H * 0.36,
+      y: groundY() - 190,
       life: 1
     });
   }
 
+  // 地面のy座標（キャラクターの足元をここに合わせる）
+  function groundY() { return H * CONFIG.groundRatio; }
+
   // 狐が描かれているあたりのタップ判定（ざっくり円で判定する）
   function inFoxArea(px, py) {
     const dx = px - W / 2;
-    const dy = py - H * 0.46;
+    const dy = py - (groundY() - 90);
     return Math.hypot(dx, dy) < 110;
   }
 
@@ -437,14 +443,29 @@
       ctx.fill();
     }
 
-    // 地面
+    // 地面（少し立体感を出すため、手前ほど濃い色になる帯を重ねる）
+    const gy = H * CONFIG.groundRatio;
     ctx.fillStyle = night ? '#4a6b4e' : '#9fd47c';
-    const groundY = H * 0.72;
-    ctx.fillRect(0, groundY, W, H - groundY);
+    ctx.fillRect(0, gy, W, H - gy);
+    ctx.fillStyle = night ? '#3d5a41' : '#8ec96b';
+    ctx.fillRect(0, gy, W, (H - gy) * 0.4);
+  }
+
+  // キャラクターの真下に落ちる影（地面に足がついているように見せる）
+  function drawShadow(cx, gy, radiusX) {
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = '#132608';
+    ctx.beginPath();
+    ctx.ellipse(cx, gy, radiusX, radiusX * 0.28, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   // たまごを図形合成で描く（あたため度に応じてひび割れが増え、演出でわずかに揺れる）
-  function drawEgg(cx, cy) {
+  function drawEgg(cx, gy) {
+    drawShadow(cx, gy, 40);
+    const cy = gy - 58;
     const wobble = Math.sin(Math.min(1, state.bounce) * Math.PI * 3) * (state.bounce > 0 ? 8 : 0);
     ctx.save();
     ctx.translate(cx, cy);
@@ -491,9 +512,11 @@
   }
 
   // 横になって眠っている狐（丸くなった姿と Zzz を描く）
-  function drawFoxSleeping(cx, cy, scale) {
+  function drawFoxSleeping(cx, gy, scale) {
+    drawShadow(cx, gy, 74 * scale);
+    const cy = gy - 54 * scale;
     ctx.save();
-    ctx.translate(cx, cy + 30 * scale);
+    ctx.translate(cx, cy);
     ctx.scale(scale, scale);
 
     // 丸くなった体（横長の楕円）
@@ -559,17 +582,19 @@
   }
 
   // 成長段階と機嫌に応じて狐を図形合成で描く
-  function drawFox(cx, cy) {
+  function drawFox(cx, gy) {
     const stage = state.stage - 1; // 0:子狐 1:若狐 2:成獣狐（たまごは別関数で描く）
     const scale = 0.62 + stage * 0.24;     // 成長するほど大きくなる
 
     if (state.sleeping) {
-      drawFoxSleeping(cx, cy, scale);
+      drawFoxSleeping(cx, gy, scale);
       return;
     }
 
+    drawShadow(cx, gy, 48 * scale);
+    const footY = gy - 64 * scale; // 体の下端（足元）がここに来るよう合わせる
     const bounceY = Math.sin(Math.min(1, state.bounce) * Math.PI) * 18;
-    const y = cy - bounceY;
+    const y = footY - bounceY;
     const happy = !state.sick && stats.mood >= 55;
     const sad = state.sick || stats.mood < CONFIG.lowStatThreshold;
 
@@ -831,9 +856,9 @@
   function draw() {
     drawBackground();
     if (state.stage === EGG_STAGE) {
-      drawEgg(W / 2, H * 0.46);
+      drawEgg(W / 2, groundY());
     } else {
-      drawFox(W / 2, H * 0.46);
+      drawFox(W / 2, groundY());
     }
     drawHearts();
     drawStatusBars();
