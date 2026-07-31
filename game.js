@@ -51,9 +51,11 @@
     playMinigameDuration: 8,  // ミニゲームの時間（秒）
     acornSpawnInterval: 0.65, // どんぐりが降ってくる間隔（秒）
     acornFallSpeed: 150,      // どんぐりの落下速度（px/秒）
-    acornRadius: 16,          // どんぐりの大きさ（タップ判定にも使う）
+    acornRadius: 16,          // どんぐりの大きさ
     moodPerCatch: 6,          // どんぐり1個キャッチするごとに増える機嫌
     missedMoodPenalty: 2,     // どんぐりを取りこぼすと減る機嫌
+    foxMoveEase: 9,           // ミニゲーム中、狐が指の位置へ寄っていく速さ（大きいほど機敏）
+    foxCatchWidth: 46,        // 狐がどんぐりを受け止められる横幅（半径。狐の胴回りに合わせた目安）
 
     // --- 操作のクールダウン（連打防止・秒） ---
     feedCooldown: 1.2,
@@ -212,6 +214,7 @@
   }
 
   // 「あそぶ」= どんぐりキャッチのミニゲームを開始する（病気の間は遊べない）
+  // 狐を左右にドラッグして動かし、落ちてくるどんぐりの真下で受け止める
   function doPlay() {
     if (state.sleeping || state.sick || state.cooldown.play > 0 || state.minigame) return;
     state.cooldown.play = CONFIG.playCooldown;
@@ -220,23 +223,18 @@
       spawnTimer: 0,
       score: 0,
       missed: 0,
-      acorns: []
+      acorns: [],
+      foxX: W / 2,
+      targetX: W / 2
     };
   }
 
-  // ミニゲーム中に降ってくるどんぐりをタップで捕まえる
-  function tryCatchAcorn(pos) {
+  // ミニゲーム中、狐を動かす目標位置を指の位置に合わせる
+  function steerFox(pos) {
     const mg = state.minigame;
     if (!mg) return;
-    for (const a of mg.acorns) {
-      if (a.caught) continue;
-      if (Math.hypot(pos.x - a.x, pos.y - a.y) < CONFIG.acornRadius + 16) {
-        a.caught = true;
-        a.fade = 1;
-        mg.score += 1;
-        return;
-      }
-    }
+    const margin = 50;
+    mg.targetX = clamp(pos.x, margin, W - margin);
   }
 
   function finishMinigame() {
@@ -310,9 +308,9 @@
   const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm, medicine: doMedicine };
 
   function handlePointerDown(pos) {
-    // ミニゲーム中はどんぐりのタップだけを受け付ける（他の操作は行えない）
+    // ミニゲーム中はドラッグで狐を操作するだけで、他の操作は行えない
     if (state.minigame) {
-      tryCatchAcorn(pos);
+      steerFox(pos);
       return;
     }
     const keys = state.stage === EGG_STAGE ? ['warm'] : ['feed', 'play', 'clean', 'sleep'];
@@ -335,11 +333,26 @@
       handlePointerDown(localPos(t.clientX, t.clientY));
     }
   }
+  function onTouchMove(e) {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      steerFox(localPos(t.clientX, t.clientY));
+    }
+  }
+  let mouseDragging = false;
   function onMouseDown(e) {
+    mouseDragging = true;
     handlePointerDown(localPos(e.clientX, e.clientY));
   }
+  function onMouseMove(e) {
+    if (!mouseDragging) return;
+    steerFox(localPos(e.clientX, e.clientY));
+  }
+  function onMouseUp() {
+    mouseDragging = false;
+  }
   function onKeyDown(e) {
-    if (state.minigame) return; // ミニゲーム中はタップでのみキャッチできる
+    if (state.minigame) return; // ミニゲーム中はドラッグでのみ操作できる
     const action = KEY_ACTIONS[e.code];
     if (action) {
       e.preventDefault();
@@ -348,7 +361,11 @@
   }
 
   canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+  canvas.addEventListener('touchmove', onTouchMove, { passive: false });
   canvas.addEventListener('mousedown', onMouseDown);
+  canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('mouseup', onMouseUp);
+  canvas.addEventListener('mouseleave', onMouseUp);
   window.addEventListener('keydown', onKeyDown);
 
   // ---------- 更新(update) ----------
@@ -408,6 +425,9 @@
       return;
     }
 
+    // 狐を目標位置（指でドラッグした場所）へなめらかに寄せる
+    mg.foxX += (mg.targetX - mg.foxX) * Math.min(1, dt * CONFIG.foxMoveEase);
+
     mg.spawnTimer -= dt;
     if (mg.spawnTimer <= 0) {
       mg.spawnTimer = CONFIG.acornSpawnInterval;
@@ -415,13 +435,20 @@
     }
 
     const gy = groundY();
+    const scale = foxScale();
+    const catchY = gy - 70 * scale;               // 狐の胴のあたり。ここまで落ちてきたら受け止め判定を行う
+    const catchRadius = CONFIG.foxCatchWidth * scale + CONFIG.acornRadius;
     for (const a of mg.acorns) {
       if (a.caught) {
         a.y -= 70 * dt;
         a.fade -= dt * 2;
       } else {
         a.y += CONFIG.acornFallSpeed * dt;
-        if (a.y - CONFIG.acornRadius > gy) {
+        if (a.y >= catchY && Math.abs(a.x - mg.foxX) < catchRadius) {
+          a.caught = true;
+          a.fade = 1;
+          mg.score += 1;
+        } else if (a.y - CONFIG.acornRadius > gy) {
           a.missed = true;
           mg.missed += 1;
         }
@@ -673,10 +700,15 @@
     ctx.globalAlpha = 1;
   }
 
+  // 成長段階に応じた狐の描画スケール（たまごは対象外）
+  function foxScale() {
+    const stage = state.stage - 1; // 0:子狐 1:若狐 2:成獣狐
+    return 0.62 + stage * 0.24;    // 成長するほど大きくなる
+  }
+
   // 成長段階と機嫌に応じて狐を図形合成で描く
   function drawFox(cx, gy) {
-    const stage = state.stage - 1; // 0:子狐 1:若狐 2:成獣狐（たまごは別関数で描く）
-    const scale = 0.62 + stage * 0.24;     // 成長するほど大きくなる
+    const scale = foxScale();
 
     if (state.sleeping) {
       drawFoxSleeping(cx, gy, scale);
@@ -928,9 +960,13 @@
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const hudColor = isNight() ? '#f5ead8' : '#2a1c14';
+    ctx.fillStyle = hudColor;
     ctx.font = 'bold 16px sans-serif';
-    ctx.fillStyle = isNight() ? '#f5ead8' : '#2a1c14';
-    ctx.fillText(`どんぐりキャッチ！ スコア: ${mg.score}`, W / 2, y - 22);
+    ctx.fillText(`どんぐりキャッチ！ スコア: ${mg.score}`, W / 2, y - 38);
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = hudColor;
+    ctx.fillText('ドラッグして狐を動かし、どんぐりを受け止めよう', W / 2, y - 18);
 
     drawRoundRect(bx, y, barW, 14, 7);
     ctx.fillStyle = 'rgba(255,255,255,0.6)';
@@ -1020,7 +1056,7 @@
     if (state.stage === EGG_STAGE) {
       drawEgg(W / 2, groundY());
     } else {
-      drawFox(W / 2, groundY());
+      drawFox(state.minigame ? state.minigame.foxX : W / 2, groundY());
     }
     drawHearts();
     drawSnacks();
