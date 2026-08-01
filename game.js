@@ -111,7 +111,8 @@
     wanderMargin: 60,    // 歩き回れる範囲の左右の余白（px）
 
     // --- 倍速モード ---
-    speedMultiplier: 2   // 倍速モードON時、時間の流れが何倍速くなるか（ミニゲーム中は対象外）
+    // ボタンを押すたびにこの順で切り替わる（1が通常速度）。ミニゲーム中は対象外
+    speedLevels: [1, 2, 4]
   };
 
   // ステージ0はまだ狐になっていない「たまご」。あたため続けると孵化する
@@ -131,7 +132,7 @@
     hatchProgress: 0,      // たまごのあたため度（0〜100。100で孵化）
     sleeping: false,
     sick: false,
-    speedMode: false,     // 倍速モードのON/OFF
+    speedLevelIndex: 0,   // CONFIG.speedLevels の何番目か（0が通常速度）
     goodCareSeconds: 0,   // 「良いお世話」が続いた累計秒数（この値で成長判定する）
     elapsed: 0,           // プレイ開始からの経過秒数（朝夜サイクルにも使う）
     bounce: 0,            // お世話演出のジャンプ量(0〜1、減衰していく)
@@ -347,10 +348,10 @@
     return Math.hypot(dx, dy) < 110;
   }
 
-  // 倍速モードを切り替える（ミニゲーム中は対象外なので押せない）
+  // 倍速モードを切り替える（通常→×2→×4→通常…の順で循環。ミニゲーム中は押せない）
   function doToggleSpeed() {
     if (state.minigame) return;
-    state.speedMode = !state.speedMode;
+    state.speedLevelIndex = (state.speedLevelIndex + 1) % CONFIG.speedLevels.length;
   }
 
   const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm, medicine: doMedicine, speed: doToggleSpeed };
@@ -572,7 +573,7 @@
 
   function update(dt) {
     // 倍速モード中は時間の流れを速める（ミニゲーム中は公平を保つため対象外）
-    const timeScale = state.speedMode && !state.minigame ? CONFIG.speedMultiplier : 1;
+    const timeScale = state.minigame ? 1 : CONFIG.speedLevels[state.speedLevelIndex];
     const gdt = dt * timeScale;
 
     state.elapsed += gdt;
@@ -1152,20 +1153,23 @@
   }
 
   // 倍速モードの切り替えボタン（右上に固定表示。ミニゲーム中は隠す）
+  // タップするたびに通常速度→×2→×4→通常速度…と循環する
   function drawSpeedToggle() {
     if (state.minigame) return;
+    const level = CONFIG.speedLevels[state.speedLevelIndex];
+    const active = level > 1;
     const b = buttons.speed;
     drawRoundRect(b.x, b.y, b.w, b.h, 10);
-    ctx.fillStyle = state.speedMode ? '#f2934f' : 'rgba(255,255,255,0.92)';
+    ctx.fillStyle = active ? '#f2934f' : 'rgba(255,255,255,0.92)';
     ctx.fill();
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#2a1c14';
     ctx.stroke();
-    ctx.fillStyle = state.speedMode ? '#ffffff' : '#2a1c14';
+    ctx.fillStyle = active ? '#ffffff' : '#2a1c14';
     ctx.font = 'bold 16px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+    ctx.fillText(`×${level}`, b.x + b.w / 2, b.y + b.h / 2);
   }
 
   function drawGrowthBanner() {
