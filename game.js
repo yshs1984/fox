@@ -108,7 +108,10 @@
     wanderEase: 6,       // 目的地へ寄っていく速さ
     wanderPauseMin: 2,   // 立ち止まってから次に歩き出すまでの時間（最小・秒）
     wanderPauseMax: 5,   // 同（最大・秒）
-    wanderMargin: 60     // 歩き回れる範囲の左右の余白（px）
+    wanderMargin: 60,    // 歩き回れる範囲の左右の余白（px）
+
+    // --- 倍速モード ---
+    speedMultiplier: 2   // 倍速モードON時、時間の流れが何倍速くなるか（ミニゲーム中は対象外）
   };
 
   // ステージ0はまだ狐になっていない「たまご」。あたため続けると孵化する
@@ -128,6 +131,7 @@
     hatchProgress: 0,      // たまごのあたため度（0〜100。100で孵化）
     sleeping: false,
     sick: false,
+    speedMode: false,     // 倍速モードのON/OFF
     goodCareSeconds: 0,   // 「良いお世話」が続いた累計秒数（この値で成長判定する）
     elapsed: 0,           // プレイ開始からの経過秒数（朝夜サイクルにも使う）
     bounce: 0,            // お世話演出のジャンプ量(0〜1、減衰していく)
@@ -163,7 +167,8 @@
     clean: { x: 0, y: 0, w: 0, h: 0, label: 'そうじ', key: 'clean' },
     sleep: { x: 0, y: 0, w: 0, h: 0, label: 'ねる', key: 'sleep' },
     warm: { x: 0, y: 0, w: 0, h: 0, label: 'あたためる', key: 'warm' },
-    medicine: { x: 0, y: 0, w: 0, h: 0, label: 'くすり', key: 'medicine' }
+    medicine: { x: 0, y: 0, w: 0, h: 0, label: 'くすり', key: 'medicine' },
+    speed: { x: 0, y: 0, w: 0, h: 0, label: '×2', key: 'speed' }
   };
 
   const KEY_ACTIONS = {
@@ -172,7 +177,8 @@
     Digit3: 'clean', KeyC: 'clean',
     Digit4: 'sleep', KeyS: 'sleep',
     Space: 'warm', KeyW: 'warm',
-    Digit5: 'medicine', KeyM: 'medicine'
+    Digit5: 'medicine', KeyM: 'medicine',
+    Digit6: 'speed', KeyX: 'speed'
   };
 
   function layoutButtons() {
@@ -205,6 +211,13 @@
     buttons.medicine.y = y - h - gap;
     buttons.medicine.w = medW;
     buttons.medicine.h = h;
+
+    // 倍速モードの切り替えボタン（常に右上に固定表示）
+    const speedSize = 44;
+    buttons.speed.x = W - speedSize - 12;
+    buttons.speed.y = 12;
+    buttons.speed.w = speedSize;
+    buttons.speed.h = speedSize;
   }
 
   function localPos(clientX, clientY) {
@@ -334,7 +347,13 @@
     return Math.hypot(dx, dy) < 110;
   }
 
-  const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm, medicine: doMedicine };
+  // 倍速モードを切り替える（ミニゲーム中は対象外なので押せない）
+  function doToggleSpeed() {
+    if (state.minigame) return;
+    state.speedMode = !state.speedMode;
+  }
+
+  const ACTIONS = { feed: doFeed, play: doPlay, clean: doClean, sleep: toggleSleep, warm: doWarm, medicine: doMedicine, speed: doToggleSpeed };
 
   function handlePointerDown(pos) {
     // ミニゲーム中はドラッグで狐を操作するだけで、他の操作は行えない
@@ -344,6 +363,7 @@
     }
     const keys = state.stage === EGG_STAGE ? ['warm'] : ['feed', 'play', 'clean', 'sleep'];
     if (state.sick) keys.push('medicine');
+    keys.push('speed'); // 倍速ボタンは常に右上に表示される
     for (const key of keys) {
       if (inRect(pos.x, pos.y, buttons[key])) {
         ACTIONS[key]();
@@ -551,35 +571,39 @@
   }
 
   function update(dt) {
-    state.elapsed += dt;
+    // 倍速モード中は時間の流れを速める（ミニゲーム中は公平を保つため対象外）
+    const timeScale = state.speedMode && !state.minigame ? CONFIG.speedMultiplier : 1;
+    const gdt = dt * timeScale;
+
+    state.elapsed += gdt;
     for (const k of Object.keys(state.cooldown)) {
-      state.cooldown[k] = Math.max(0, state.cooldown[k] - dt);
+      state.cooldown[k] = Math.max(0, state.cooldown[k] - gdt);
     }
-    state.bounce = Math.max(0, state.bounce - dt / CONFIG.bounceDuration);
-    state.tailPhase += dt * CONFIG.tailWagSpeed * (0.4 + stats.mood / 100);
-    if (state.bannerTimer > 0) state.bannerTimer = Math.max(0, state.bannerTimer - dt);
+    state.bounce = Math.max(0, state.bounce - gdt / CONFIG.bounceDuration);
+    state.tailPhase += gdt * CONFIG.tailWagSpeed * (0.4 + stats.mood / 100);
+    if (state.bannerTimer > 0) state.bannerTimer = Math.max(0, state.bannerTimer - gdt);
 
     // なでたときのハートを浮かせながら消していく
     for (const hrt of state.hearts) {
-      hrt.y -= 40 * dt;
-      hrt.life -= dt / 1.2;
+      hrt.y -= 40 * gdt;
+      hrt.life -= gdt / 1.2;
     }
     state.hearts = state.hearts.filter(hrt => hrt.life > 0);
 
     // エサやりのあぶらあげを、狐の口元まで落としてから消す
     for (const snack of state.snacks) {
-      snack.y += 90 * dt;
-      snack.life -= dt / 1.1;
+      snack.y += 90 * gdt;
+      snack.life -= gdt / 1.1;
     }
     state.snacks = state.snacks.filter(snack => snack.life > 0);
 
     if (state.stage !== EGG_STAGE) {
-      updateStats(dt);
-      updateSickness(dt);
+      updateStats(gdt);
+      updateSickness(gdt);
     }
-    updateMinigame(dt);
-    updateWander(dt);
-    updateGrowth(dt);
+    updateMinigame(gdt);
+    updateWander(gdt);
+    updateGrowth(gdt);
   }
 
   // ---------- 描画(draw) ----------
@@ -1127,6 +1151,23 @@
     }
   }
 
+  // 倍速モードの切り替えボタン（右上に固定表示。ミニゲーム中は隠す）
+  function drawSpeedToggle() {
+    if (state.minigame) return;
+    const b = buttons.speed;
+    drawRoundRect(b.x, b.y, b.w, b.h, 10);
+    ctx.fillStyle = state.speedMode ? '#f2934f' : 'rgba(255,255,255,0.92)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#2a1c14';
+    ctx.stroke();
+    ctx.fillStyle = state.speedMode ? '#ffffff' : '#2a1c14';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+  }
+
   function drawGrowthBanner() {
     if (state.bannerTimer <= 0) return;
     const alpha = Math.min(1, state.bannerTimer / 0.5);
@@ -1157,6 +1198,7 @@
     drawAcorns();
     drawStatusBars();
     drawButtons();
+    drawSpeedToggle();
     drawGrowthBanner();
   }
 
